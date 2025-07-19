@@ -13,12 +13,8 @@ interface WalletCreationPayload {
   sendPassWordFlag?: string;
 }
 
-// OPay public key (replace with actual key from OPay dashboard)
-const OPAY_PUBLIC_KEY = `
------BEGIN PUBLIC KEY-----
-[Replace with OPay's public key from sandbox dashboard]
------END PUBLIC KEY-----
-`;
+// OPay RSA public key (must be PEM format from sandbox dashboard)
+const OPAY_PUBLIC_KEY = process.env.NEXT_PUBLIC_OPAY_RSA_PUBLIC_KEY || '';
 
 // Merchant private key (replace with your generated private key)
 const MERCHANT_PRIVATE_KEY = `
@@ -36,11 +32,14 @@ export async function POST(request: Request): Promise<NextResponse> {
       hostUrl: process.env.NEXT_PUBLIC_OPAY_HOST_URL || 'MISSING',
       merchantId: process.env.OPAY_MERCHANT_ID ? '[REDACTED]' : 'MISSING',
       secretKey: process.env.OPAY_SECRET_KEY ? '[REDACTED]' : 'MISSING',
-      publicKey: process.env.NEXT_PUBLIC_OPAY_PUBLIC_KEY ? '[REDACTED]' : 'MISSING',
+      rsaPublicKey: process.env.NEXT_PUBLIC_OPAY_RSA_PUBLIC_KEY ? '[REDACTED]' : 'MISSING',
+      publicKeyIdentifier: process.env.NEXT_PUBLIC_OPAY_PUBLIC_KEY ? '[REDACTED]' : 'MISSING',
     });
 
-    // Debug: Log clientAuthKey prefix
+    // Debug: Log clientAuthKey and OPay public key status
     console.log('clientAuthKey prefix:', process.env.OPAY_SECRET_KEY?.substring(0, 8) || 'MISSING');
+    console.log('OPAY_PUBLIC_KEY defined:', !!OPAY_PUBLIC_KEY);
+    console.log('OPAY_PUBLIC_KEY snippet:', OPAY_PUBLIC_KEY ? OPAY_PUBLIC_KEY.substring(0, 20) + '...' : 'EMPTY');
 
     // Validate environment variables
     if (
@@ -51,6 +50,18 @@ export async function POST(request: Request): Promise<NextResponse> {
       console.error('Missing required environment variables');
       return NextResponse.json(
         { error: 'Server configuration error: Missing OPAY environment variables' },
+        { status: 500 }
+      );
+    }
+
+    // Validate OPay RSA public key
+    if (!OPAY_PUBLIC_KEY || !OPAY_PUBLIC_KEY.includes('BEGIN PUBLIC KEY')) {
+      console.error('OPAY_PUBLIC_KEY is not configured or invalid (must be PEM format)');
+      return NextResponse.json(
+        {
+          error: 'Server configuration error: OPAY_PUBLIC_KEY not configured or invalid',
+          details: 'Please set NEXT_PUBLIC_OPAY_RSA_PUBLIC_KEY in .env.local with a valid PEM-formatted RSA public key from the OPay sandbox dashboard',
+        },
         { status: 500 }
       );
     }
@@ -79,7 +90,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       );
     }
 
-    // Prepare paramContent
+    // Prepare minimal paramContent
     const paramContent = {
       opayMerchantId: process.env.OPAY_MERCHANT_ID,
       name,
@@ -90,21 +101,44 @@ export async function POST(request: Request): Promise<NextResponse> {
       sendPassWordFlag,
     };
 
+    // Convert to JSON and log size
+    const paramContentJson = JSON.stringify(paramContent);
+    console.log('Plain paramContent:', paramContentJson);
+    console.log('Plain paramContent length:', paramContentJson.length);
+
     // Encrypt paramContent with OPay public key
-    const rsa = new NodeRSA({ b: 1024 });
-    rsa.setOptions({ encryptionScheme: { scheme: 'pkcs1' } });
-    rsa.importKey(OPAY_PUBLIC_KEY, 'pkcs8-public-pem');
-    const encryptedParamContent = rsa.encrypt(JSON.stringify(paramContent), 'base64');
+    let encryptedParamContent: string;
+    try {
+      const rsa = new NodeRSA();
+      try {
+        rsa.importKey(OPAY_PUBLIC_KEY, 'pkcs8-public-pem');
+      } catch (keyImportError: any) {
+        console.error('Failed to import OPAY_PUBLIC_KEY:', keyImportError.message);
+        throw new Error('Invalid OPAY_PUBLIC_KEY format: ' + keyImportError.message);
+      }
+      rsa.setOptions({ encryptionScheme: 'pkcs1' });
+      encryptedParamContent = rsa.encrypt(paramContentJson, 'base64');
+      console.log('Encrypted paramContent length:', encryptedParamContent.length);
+    } catch (encryptionError: any) {
+      console.error('Encryption failed:', encryptionError.message);
+      throw new Error('Failed to encrypt paramContent: ' + encryptionError.message);
+    }
 
     // Generate signature with merchant private key
     const timestamp = Date.now().toString();
     const stringToSign = encryptedParamContent + timestamp;
-    const rsaSign = KEYUTIL.getKey(MERCHANT_PRIVATE_KEY);
-    const sig = new KJUR.crypto.Signature({ alg: 'SHA256withRSA' });
-    sig.init(rsaSign);
-    sig.updateString(stringToSign);
-    const signature = hextob64(sig.sign());
-    console.log('Generated RSA Signature:', '[REDACTED]');
+    let signature: string;
+    try {
+      const rsaSign = KEYUTIL.getKey(MERCHANT_PRIVATE_KEY);
+      const sig = new KJUR.crypto.Signature({ alg: 'SHA256withRSA' });
+      sig.init(rsaSign);
+      sig.updateString(stringToSign);
+      signature = hextob64(sig.sign());
+      console.log('Generated RSA Signature:', '[REDACTED]');
+    } catch (signingError: any) {
+      console.error('Signature generation failed:', signingError.message);
+      throw new Error('Failed to generate signature: ' + signingError.message);
+    }
     console.log('Timestamp:', timestamp);
 
     // Prepare payload
@@ -165,12 +199,20 @@ export async function POST(request: Request): Promise<NextResponse> {
       throw new Error(response.data.message || 'Failed to create wallet');
     }
 
-    // Decrypt response data (if needed)
-    const responseRsa = new NodeRSA(MERCHANT_PRIVATE_KEY);
-    responseRsa.setOptions({ encryptionScheme: { scheme: 'pkcs1' } });
-    const decryptedData = responseRsa.decrypt(response.data.data, 'utf8');
-    const responseData = JSON.parse(decryptedData);
-    console.log('Decrypted response data:', responseData);
+    // Decrypt response data
+    let responseData: any = {};
+    if (response.data.data) {
+      try {
+        const responseRsa = new NodeRSA(MERCHANT_PRIVATE_KEY);
+        responseRsa.setOptions({ encryptionScheme: 'pkcs1' });
+        const decryptedData = responseRsa.decrypt(response.data.data, 'utf8');
+        responseData = JSON.parse(decryptedData);
+        console.log('Decrypted response data:', responseData);
+      } catch (decryptionError: any) {
+        console.error('Decryption failed:', decryptionError.message);
+        throw new Error('Failed to decrypt response data: ' + decryptionError.message);
+      }
+    }
 
     console.log('Wallet creation successful');
     return NextResponse.json({ ...response.data, data: responseData });
@@ -183,7 +225,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json(
       {
         error: 'Failed to create wallet',
-        details: error.response?.data?.message || error.message,
+        details: error.message,
         code: error.response?.data?.code || 'UNKNOWN_ERROR',
       },
       { status: error.response?.status || 500 }
