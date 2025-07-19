@@ -20,7 +20,6 @@ export async function POST(request: Request) {
       !process.env.NEXT_PUBLIC_OPAY_HOST_URL ||
       !process.env.OPAY_MERCHANT_ID ||
       !process.env.OPAY_SECRET_KEY ||
-      !process.env.NEXT_PUBLIC_OPAY_PUBLIC_KEY ||
       !process.env.OPAY_SALT_INDEX
     ) {
       console.error('Missing required environment variables');
@@ -54,12 +53,11 @@ export async function POST(request: Request) {
       );
     }
 
+    // Prepare payload
     const payload = {
       opayMerchantId: process.env.OPAY_MERCHANT_ID,
       depositCode,
     };
-
-    console.log('Prepared payload:', payload);
 
     // Generate HMAC signature
     const timestamp = Date.now().toString();
@@ -75,17 +73,14 @@ export async function POST(request: Request) {
     const headers = {
       'Content-Type': 'application/json',
       'clientAuthKey': process.env.OPAY_SECRET_KEY,
-      'version': '2',
+      'version': 'V1.0.1',
       'bodyFormat': 'JSON',
-      'MerchantId': process.env.OPAY_MERCHANT_ID,
-      'X-Timestamp': timestamp,
-      'X-Signature': signature,
+      'timestamp': timestamp,
       'User-Agent': 'OPay-WAAS-App/1.0',
     };
     console.log('Request Headers:', {
       ...headers,
       clientAuthKey: '[REDACTED]',
-      'X-Signature': '[REDACTED]',
     });
 
     // Call OPay API
@@ -130,7 +125,7 @@ export async function POST(request: Request) {
             url: error.config.url,
             method: error.config.method,
             headers: error.config.headers
-              ? { ...error.config.headers, clientAuthKey: '[REDACTED]', 'X-Signature': '[REDACTED]' }
+              ? { ...error.config.headers, clientAuthKey: '[REDACTED]' }
               : undefined,
             data: error.config.data,
           }

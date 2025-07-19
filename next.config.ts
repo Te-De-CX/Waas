@@ -9,9 +9,8 @@ export default nextConfig;
 // next.config.js
 module.exports = {
   env: {
-    NEXT_PUBLIC_BASE_URL: process.env.NEXT_PUBLIC_BASE_URL,
-    NEXT_PUBLIC_OPAY_HOST_URL: process.env.NEXT_PUBLIC_OPAY_HOST_URL,
-    
-    // Add other public variables here
+    OPAY_MERCHANT_ID: process.env.OPAY_MERCHANT_ID,
+    OPAY_SECRET_KEY: process.env.OPAY_SECRET_KEY,
+    OPAY_SALT_INDEX: process.env.OPAY_SALT_INDEX,
   },
 }
